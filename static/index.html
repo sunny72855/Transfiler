@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="styles.css">
+    <!-- Cropper.js -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.6.1/cropper.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.6.1/cropper.min.js"></script>
+    <!-- Cropper.js -->
+
+    <title>Document Translator Prototype</title>
+</head>
+
+<body>
+    <header class="top-form-container">
+        <div class="brand">
+            <span class="brand-mark">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M9 14h6M9 17h4"/></svg>
+            </span>
+            <span class="brand-name">Document Translator</span>
+        </div>
+
+        <div class="file-group">
+            <input type="file" id="fileInput">
+            <button id="uploadBtn">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0-4 4m4-4 4 4M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/></svg>
+                <span class="btn-label">Upload</span>
+            </button>
+        </div>
+
+        <div class="header-actions">
+            <button id="clearBtn">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-12M9 7V4h6v3"/></svg>
+                <span class="btn-label">Clear</span>
+            </button>
+            <button id="compileBtn">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M9 14h6M9 17h4"/></svg>
+                <span class="btn-label">Compile PDF</span>
+            </button>
+        </div>
+    </header>
+
+    <section class="imageDisplayer">
+        <div id="actions">
+            <button id="toggleModeBtn">Selection Mode: OFF</button>
+            <button id="cropBtn">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 2v14a2 2 0 0 0 2 2h14"/><path d="M18 22V8a2 2 0 0 0-2-2H2"/></svg>
+                <span class="btn-label">Crop</span>
+            </button>
+        </div>
+
+        <div id="display">
+            <!-- <img id="displayImage" alt="Please select a page to view"/> -->
+            <iframe id="displayImage" src="cropper/index.html"></iframe>
+        </div>
+
+        <div id="selector"></div>
+    </section>
+
+    <script type="module" src="script.js" defer></script>
+</body>
+
+</html>
