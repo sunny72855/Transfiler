@@ -1,5 +1,7 @@
 # Transfiler
 
+Current release: **Patch v0.1.0**.
+
 A small FastAPI app for translating English garment-manufacturing PDFs/images into
 Vietnamese, built around a scan → OCR → translate → re-draw → recompile workflow.
 
@@ -61,6 +63,12 @@ uvicorn app:app --reload
 
 The frontend is served at `/` (from `static/`), the API under the routes above, and
 generated page images under `/images`.
+
+## Roadmap
+
+- Better visual guidance.
+- Improved cropping systems.
+- More accurate translation.
 
 ## Notes
 
