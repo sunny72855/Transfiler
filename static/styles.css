@@ -51,6 +51,11 @@ button:hover {
   background: var(--brand-purple-hover);
 }
 
+button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
 button:focus-visible {
   outline: 2px solid var(--brand-purple);
   outline-offset: 2px;
@@ -296,7 +301,7 @@ input[type="file"]::file-selector-button {
 }
 
 #selector:empty::before {
-  content: "Upload a PDF to see its pages here";
+  content: "Upload a PDF or image to see its pages here";
   margin: auto;
   color: var(--muted);
   font-size: 13px;

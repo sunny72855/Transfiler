@@ -1,25 +1,44 @@
-from paddleocr import PaddleOCR
-import numpy as np
-import cv2
+from threading import Lock
 
-ocr = PaddleOCR(lang="en")
+
+_ocr = None
+_initialization_lock = Lock()
+_inference_lock = Lock()
+
+
+def _get_ocr():
+    global _ocr
+    if _ocr is None:
+        with _initialization_lock:
+            if _ocr is None:
+                try:
+                    from paddleocr import PaddleOCR
+                    _ocr = PaddleOCR(lang="en", use_angle_cls=True, use_gpu=False, show_log=False)
+                except Exception as error:
+                    raise RuntimeError("OCR could not be initialized. Check the PaddleOCR installation and model files.") from error
+    return _ocr
+
 
 def run_ocr_on_bytes(file_bytes: bytes) -> str:
-    # Turn raw uploaded network bytes into a real image matrix for OpenCV
-    nparr = np.frombuffer(file_bytes, np.uint8)
-    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-    
-    # Run OCR
-    # result is a list of pages, so we take result[0]
-    result = ocr.ocr(img, cls=True)[0]
-    
-    extracted_text = ""
-
-    # Since result is now a flat list of lines, we can loop directly
-    for line in result:
-        # line is [ [box], (text, confidence) ]
-        # We access the tuple at index 1, then the string at index 0
-        text = line[1][0]
-        extracted_text += text + "\n"
-
-    return extracted_text
+    if not file_bytes:
+        raise ValueError("The image is empty.")
+    try:
+        import cv2
+        import numpy as np
+    except ImportError as error:
+        raise RuntimeError("OCR image dependencies are unavailable.") from error
+    encoded = np.frombuffer(file_bytes, np.uint8)
+    image = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
+    if image is None:
+        raise ValueError("The uploaded image could not be decoded.")
+    try:
+        # A Paddle predictor is shared between requests and is not thread-safe.
+        with _inference_lock:
+            result = _get_ocr().ocr(image, cls=True)
+        if not result or not result[0]:
+            return ""
+        return "\n".join(line[1][0] for line in result[0])
+    except RuntimeError:
+        raise
+    except Exception as error:
+        raise RuntimeError("OCR could not read the selected image.") from error

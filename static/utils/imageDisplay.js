@@ -1,34 +1,35 @@
-export function updateIframeDimensions(imageDisplayer, img, src) {
-  const ratio = img.naturalWidth / img.naturalHeight;
-  const maxAvailableWidth = imageDisplayer.parentElement.clientWidth;
+export function updateIframeDimensions(imageDisplayer, img) {
+  const stage = imageDisplayer.parentElement;
+  const scale = Math.min(stage.clientWidth / img.naturalWidth, stage.clientHeight / img.naturalHeight);
+  if (!Number.isFinite(scale) || scale <= 0) return false;
 
-  let targetWidth = imageDisplayer.clientHeight * ratio;
-  let targetHeight = imageDisplayer.clientHeight;
-
-  if (targetWidth > maxAvailableWidth) {
-    targetWidth = maxAvailableWidth;
-    targetHeight = targetWidth / ratio;
-  }
+  const targetWidth = img.naturalWidth * scale;
+  const targetHeight = img.naturalHeight * scale;
 
   imageDisplayer.style.width = `${targetWidth}px`;
   imageDisplayer.style.height = `${targetHeight}px`;
 
-  return img.naturalHeight / targetHeight; // returns calculated relativeRatio
+  return true;
 }
 
 export function renderPageThumbnails(container, images, onClickHandler) {
   container.innerHTML = "";
 
+  const revision = Date.now();
   images.forEach((imageName, i) => {
-    const newDiv = document.createElement("div");
+    const newDiv = document.createElement("button");
+    newDiv.type = 'button';
     newDiv.classList.add("selectorStyling");
-    newDiv.dataset.src = `/saved_pages/${imageName}`;
+    newDiv.dataset.src = `/saved_pages/${encodeURIComponent(imageName)}?t=${revision}`;
     newDiv.addEventListener("click", onClickHandler);
 
-    newDiv.innerHTML = `
-      <img src="/saved_pages/${imageName}" alt="PDF Page" class="pdf-img" />
-      <h3>Page ${i + 1}</h3>
-    `;
+    const thumbnail = document.createElement('img');
+    thumbnail.src = newDiv.dataset.src;
+    thumbnail.alt = `Page ${i + 1}`;
+    thumbnail.classList.add('pdf-img');
+    const label = document.createElement('h3');
+    label.textContent = `Page ${i + 1}`;
+    newDiv.append(thumbnail, label);
     container.append(newDiv);
   });
 }

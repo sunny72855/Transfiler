@@ -7,12 +7,12 @@ export function getActiveImagePath(imageDisplayer) {
   };
 }
 
-export function buildCropPayload(selection, relativeRatio, imageDir) {
+export function buildCropPayload(selection, imageDir) {
   return {
-    x: selection.x * relativeRatio,
-    y: selection.y * relativeRatio,
-    secondX: selection.secondX * relativeRatio,
-    secondY: selection.secondY * relativeRatio,
+    x: selection.x,
+    y: selection.y,
+    secondX: selection.secondX,
+    secondY: selection.secondY,
     'image-dir': imageDir
   };
 }

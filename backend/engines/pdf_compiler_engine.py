@@ -1,36 +1,43 @@
+import os
+import tempfile
 from pathlib import Path
+
 from PIL import Image
 
-# Image.open() only registers the plugin for the format it opens (PNG here).
-# The PDF saver embeds pages as JPEG internally, so the JPEG encoder must be
-# registered too - Image.init() loads every plugin up front to guarantee that.
+from backend.utils.pages import saved_page_paths
+
+# Register the JPEG encoder used by Pillow's PDF writer as well as PNG readers.
 Image.init()
 
 
+class NoImagesError(ValueError):
+    """Raised when there are no saved page images to compile."""
+
+
+def has_saved_images(input_dir: str = "saved_pages") -> bool:
+    return bool(saved_page_paths(input_dir))
+
+
 def compile_images_to_pdf(input_dir: str = "saved_pages", output_pdf: str = "output.pdf") -> str:
-    input_path = Path(input_dir)
+    paths = saved_page_paths(input_dir)
+    if not paths:
+        raise NoImagesError("No files have been uploaded. Please upload a file before compiling.")
+
     output_path = Path(output_pdf)
-
-    # Sort numerically on the page number instead of the filename string,
-    # otherwise "page_10.png" sorts before "page_2.png".
-    paths = sorted(
-        input_path.glob("*.png"),
-        key=lambda p: int(p.stem.split("_")[1])
-    )
-
-    images = [
-        Image.open(path).convert("RGB")
-        for path in paths
-    ]
-
-    if images:
-        images[0].save(
-            output_path,
-            save_all=True,
-            append_images=images[1:]
-        )
-
-    for image in images:
-        image.close()
-
+    images = []
+    temporary_path = None
+    try:
+        for path in paths:
+            with Image.open(path) as source:
+                images.append(source.convert("RGB"))
+        # Write beside the output for an atomic replacement on the same filesystem.
+        with tempfile.NamedTemporaryFile(suffix=".pdf", prefix=".transfiler-", dir=output_path.parent, delete=False) as temporary:
+            temporary_path = Path(temporary.name)
+        images[0].save(temporary_path, format="PDF", save_all=True, append_images=images[1:])
+        os.replace(temporary_path, output_path)
+    finally:
+        for image in images:
+            image.close()
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
     return str(output_path)

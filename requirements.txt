@@ -5,6 +5,10 @@ pydantic==2.13.4
 pillow==12.2.0
 numpy==1.26.4
 opencv-python==4.6.0.66
+# PaddleOCR also requires contrib; pdf2docx pulls in headless. Keep their
+# shared cv2 implementation aligned and avoid newer headless builds needing NumPy 2.
+opencv-contrib-python==4.6.0.66
+opencv-python-headless==4.6.0.66
 PyMuPDF==1.27.2.3
 paddleocr==2.7.3
 paddlepaddle==2.6.2

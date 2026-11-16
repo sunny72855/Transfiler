@@ -1,116 +1,146 @@
-from fastapi import FastAPI
-from fastapi import File, UploadFile
-from fastapi.staticfiles import StaticFiles
+"""FastAPI routes for the single shared working document."""
+
+from contextlib import contextmanager
+import logging
+from pathlib import Path
+import shutil
+import tempfile
+from threading import Lock
+
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from backend.engines.ocr_engine import run_ocr_on_bytes
-from backend.engines.translation_engine import translate_text
-from backend.engines.image_converter_engine import convert_pdf_to_images
-from backend.engines.image_manipulation_engine import edit_image, crop_images
-from backend.engines.pdf_compiler_engine import compile_images_to_pdf
+from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
+
 from backend.common.common_schemas import CropData
-import os
+from backend.engines.image_converter_engine import convert_image_to_pages, convert_pdf_to_images
+from backend.engines.image_manipulation_engine import crop_images, edit_image
+from backend.engines.ocr_engine import run_ocr_on_bytes
+from backend.engines.pdf_compiler_engine import NoImagesError, compile_images_to_pdf
+from backend.engines.translation_engine import translate_text
+from backend.utils.pages import saved_page_paths
 
-app = FastAPI()  # <--- Uvicorn is strictly looking for this exact variable name!
+PROJECT_ROOT = Path(__file__).resolve().parent
+SAVED_PAGES_DIR = PROJECT_ROOT / "saved_pages"
+OUTPUT_PDF = PROJECT_ROOT / "output.pdf"
+SAVED_PAGES_DIR.mkdir(parents=True, exist_ok=True)
+logger = logging.getLogger(__name__)
+# All clients share the same document. Reject conflicting operations, including
+# from other tabs, while an OCR/translation request is awaiting the external API.
+_document_lock = Lock()
 
-origins = [
-    "http://127.0.0.1:5500",
-    "http://localhost:5500",
-]
-
-# 3. Add the middleware to your app
+app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,           # Allow your frontend port
+    allow_origins=["http://127.0.0.1:5500", "http://localhost:5500"],
     allow_credentials=True,
-    allow_methods=["*"],             # Allow all methods (POST, GET, etc.)
-    allow_headers=["*"],             # Allow all headers
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-# @app.get("/")
-# def home():
-#     return {"message": "Factory Translator Server is Alive!"}
 
-# class TranslationRequest(BaseModel):
-#     text: str
+def _error(status: int, code: str, message: str) -> HTTPException:
+    return HTTPException(status_code=status, detail={"code": code, "message": message})
+
+
+@contextmanager
+def _document_operation():
+    if not _document_lock.acquire(blocking=False):
+        raise _error(409, "DOCUMENT_BUSY", "Another document operation is running. Please wait and try again.")
+    try:
+        yield
+    except NoImagesError as error:
+        raise _error(400, "NO_IMAGES", str(error)) from error
+    except FileNotFoundError as error:
+        raise _error(404, "PAGE_NOT_FOUND", "The selected page no longer exists. Please upload or select a page again.") from error
+    except ValueError as error:
+        raise _error(422, "INVALID_INPUT", str(error)) from error
+    except (OSError, RuntimeError) as error:
+        logger.exception("Document operation failed")
+        raise _error(503, "PROCESSING_FAILED", "The document could not be processed. Check the server configuration and try again.") from error
+    finally:
+        _document_lock.release()
 
 
 @app.post("/uploadfiles/")
 async def upload_file(file: UploadFile = File(...)):
-    # 1. Read the first 8 bytes for validation
-    header = await file.read(8)
-    await file.seek(0)
-    
-    # 2. Read the entire file once for processing
-    file_content = await file.read()
-    
-    # 3. Use the header to validate types
-    # Check for PDF (starts with %PDF)
-    if header.startswith(b'%PDF') or "kien" in file.filename:
-        images = convert_pdf_to_images(file_content, "saved_pages")
-        return {"images": images}
-    
-    # Check for PNG (Starts with 89 50 4E 47...)
-    elif header.startswith(b'\x89PNG'):
-        text = run_ocr_on_bytes(file_content)
-        return {"message": "PNG image processed", "extracted_text": text}
-    
-    # Check for JPG (Starts with FF D8 FF)
-    elif header.startswith(b'\xff\xd8\xff'):
-        text = run_ocr_on_bytes(file_content)
-        return {"message": "JPG image processed", "extracted_text": text}
-    
-    else:
-        return {"message": "Invalid file type. Please upload a PDF, PNG, or JPG."}
-    
-# @app.post("/translate/")
-# def translate_endpoint(request_body: TranslationRequest):
-#     # 1. FastAPI instantly extracts just the raw text here
-#     clean_text = request_body.text
-    
-#     # 2. You pass ONLY the clean string to your function
-#     translated = translate_text(clean_text) 
-#     return {"translated_text": translated}
+    try:
+        with _document_operation():
+            content = await file.read()
+            if content.startswith(b"%PDF"):
+                converter = convert_pdf_to_images
+            elif content.startswith(b"\x89PNG\r\n\x1a\n") or content.startswith(b"\xff\xd8\xff"):
+                converter = convert_image_to_pages
+            else:
+                raise _error(415, "UNSUPPORTED_FILE", "Please upload a PDF, PNG, or JPG.")
+            images = await run_in_threadpool(converter, content, str(SAVED_PAGES_DIR))
+            return {"images": images}
+    finally:
+        await file.close()
+
+
+class _SnapshotResponse(FileResponse):
+    async def __call__(self, scope, receive, send):
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            # FileResponse background tasks can be skipped by invalid Range
+            # responses or a disconnected client. Always release our snapshot.
+            await run_in_threadpool(Path(self.path).unlink, missing_ok=True)
+
+
+def _compile_response():
+    output_path = compile_images_to_pdf(str(SAVED_PAGES_DIR), str(OUTPUT_PDF))
+    # FileResponse streams after the route returns. Give each response its own
+    # snapshot so another compile cannot change bytes while they are being sent.
+    snapshot = None
+    try:
+        with tempfile.NamedTemporaryFile(prefix="transfiler-download-", suffix=".pdf", delete=False) as temporary:
+            snapshot = Path(temporary.name)
+        shutil.copyfile(output_path, snapshot)
+        return _SnapshotResponse(
+            snapshot, media_type="application/pdf", filename="output.pdf",
+        )
+    except Exception:
+        if snapshot is not None:
+            snapshot.unlink(missing_ok=True)
+        raise
+
 
 @app.post("/compilepdf/")
-def compile_pdf():
-    output_path = compile_images_to_pdf("saved_pages", "output.pdf")
-    return FileResponse(output_path, media_type="application/pdf", filename="output.pdf")
+async def compile_pdf():
+    with _document_operation():
+        return await run_in_threadpool(_compile_response)
+
+
+def _delete_pages():
+    pages = saved_page_paths(SAVED_PAGES_DIR)
+    for page in pages:
+        page.unlink()
+    return {"message": f"Successfully deleted {len(pages)} files!"}
+
 
 @app.delete("/deletefiles/")
-def delete_files():
-    folder_path = "saved_pages"
+async def delete_files():
+    with _document_operation():
+        return await run_in_threadpool(_delete_pages)
 
-    size = 0
-
-    for item in os.listdir(folder_path):
-
-        item_path = os.path.join(folder_path, item)
-
-        if os.path.isfile(item_path):
-            os.remove(item_path)
-            size += 1
-
-    return {"message": f'Successfully deleted {size} files!'}
 
 @app.post("/cropimage/")
 async def process_crop(data: CropData):
-    # You can access the data using standard Python dot notation
+    with _document_operation():
+        image_bytes = await run_in_threadpool(crop_images, data)
+        detected_text = await run_in_threadpool(run_ocr_on_bytes, image_bytes)
+        if not detected_text or not detected_text.strip():
+            raise _error(422, "NO_TEXT", "No text was found in the selection. Select a text region and try again.")
+        translated_text = await translate_text(detected_text)
+        if not translated_text or not translated_text.strip():
+            raise _error(502, "EMPTY_TRANSLATION", "Translation returned no text. The page has not been changed.")
+        await run_in_threadpool(edit_image, data, translated_text)
+        return {"status": "success", "message": "Image cropped successfully"}
 
-    # Get bytes from image
-    image_bytes = crop_images(data)
 
-    detected_text = run_ocr_on_bytes(image_bytes)
-
-    translated_text = await translate_text(detected_text)
-    
-    # Edit the image
-    edit_image(data, translated_text)
-    
-    return {"status": "success", "message": "Image cropped successfully"}
-        
-# Host your saved images under a public "/images" web prefix
-app.mount("/images", StaticFiles(directory="saved_pages"), name="images")
-
-# Host your frontend files (HTML/JS/CSS) under the "/" prefix
-app.mount("/", StaticFiles(directory="static", html=True), name="static")
+# Keep the generated-image mount before the catch-all frontend mount.
+app.mount("/saved_pages", StaticFiles(directory=SAVED_PAGES_DIR), name="images")
+app.mount("/", StaticFiles(directory=PROJECT_ROOT / "static", html=True), name="static")

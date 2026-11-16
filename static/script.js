@@ -3,148 +3,194 @@ import { updateIframeDimensions, renderPageThumbnails } from './utils/imageDispl
 import { getActiveImagePath, buildCropPayload } from './utils/cropHandler.js';
 
 const imageDisplayer = document.getElementById('displayImage');
-const iframeWindow = imageDisplayer.contentWindow;
+const selector = document.getElementById('selector');
+const buttons = Object.fromEntries(['uploadBtn', 'clearBtn', 'compileBtn', 'toggleModeBtn', 'cropBtn']
+    .map((id) => [id, document.getElementById(id)]));
 
-let relativeRatio = 1;
-
+let operation = null;
+let cropperReady = false;
+let activeImage = null;
+let isPageLoading = false;
 let isSelectionModeActive = false;
-let isDeleting = false;
-let isUploading = false;
-let croppingProgress = false;
-let isCompiling = false;
+let pageRevision = 0;
 
-document.getElementById('uploadBtn').addEventListener('click', uploadFile);
-document.getElementById('clearBtn').addEventListener('click', deleteFiles);
-document.getElementById('compileBtn').addEventListener('click', compilePdf);
-document.getElementById('toggleModeBtn').addEventListener('click', toggleSelectionMode);
-document.getElementById('cropBtn').addEventListener('click', cropImage);
+buttons.uploadBtn.addEventListener('click', uploadFile);
+buttons.clearBtn.addEventListener('click', deleteFiles);
+buttons.compileBtn.addEventListener('click', compilePdf);
+buttons.toggleModeBtn.addEventListener('click', toggleSelectionMode);
+buttons.cropBtn.addEventListener('click', cropImage);
 
-async function uploadFile() {
-    if (isUploading) {
-        console.log("Your files are getting uploaded!");
-        return;
-    }
-
-    const fileInput = document.getElementById('fileInput');
-    const file = fileInput.files[0];
-    if (!file) return;
-
-    const formData = new FormData();
-    formData.append('file', file);
-
-    isUploading = true;
-    try {
-        const result = await uploadFileApi(formData);
-        const selectorDiv = document.getElementById('selector');
-        renderPageThumbnails(selectorDiv, result.images, displayImage);
-    } catch (error) {
-        console.error('Failed to upload file:', error);
-    } finally {
-        isUploading = false;
+function refreshControls() {
+    const busy = operation !== null;
+    for (const button of Object.values(buttons)) button.disabled = busy;
+    document.getElementById('fileInput').disabled = busy;
+    buttons.toggleModeBtn.disabled = busy || !cropperReady || !activeImage || isPageLoading;
+    buttons.cropBtn.disabled = buttons.toggleModeBtn.disabled || !isSelectionModeActive;
+    selector.querySelectorAll('button').forEach((button) => { button.disabled = busy; });
+    imageDisplayer.style.pointerEvents = busy ? 'none' : '';
+    // Empty-state styling uses the absence of inline dimensions.
+    if (!activeImage && !isPageLoading) imageDisplayer.removeAttribute('style');
+    if (cropperReady) {
+        imageDisplayer.contentWindow.setSelectionEnabled(!busy && !isPageLoading && isSelectionModeActive);
     }
 }
 
-// Remember to write a catch statement for catching nullPointer for activeTab query selector
-async function cropImage() {
-    if (croppingProgress) {
-        console.log("Please wait for image processing to finish!");
-        return;
-    }
-    if (!isSelectionModeActive) {
-        console.warn("Selection mode is not active. Activate it first.");
-        return;
-    }
+function reportError(error) {
+    console.error(error);
+    alert(error.message || 'The operation failed. Please try again.');
+}
 
-    const selection = iframeWindow.captureSelection();
-    if (!selection) return console.error("Failed to capture selection.");
-
-    const { imageElement, imageDir } = getActiveImagePath(imageDisplayer);
-    if (!imageDir) return console.error("Could not determine the active image path.");
-
-    const payload = buildCropPayload(selection, relativeRatio, imageDir);
-
-    croppingProgress = true;
+async function runOperation(name, action) {
+    // One guard covers all operations that read or change the shared pages.
+    if (operation || isPageLoading) return;
+    operation = name;
+    refreshControls();
     try {
-        const result = await cropImageApi(payload);
-        if (result.status === "success") {
-            const baseUrl = imageDir.split('?')[0];
-            const freshUrl = `${baseUrl}?t=${Date.now()}`
-            imageElement.setAttribute('src', freshUrl);
-
-            const activeTab = document.querySelector(`[data-src^="${baseUrl}"]`);
-            const image = activeTab.querySelector('img');
-
-            console.log(activeTab);
-            image.src = freshUrl;
-            activeTab.dataset.src = freshUrl;
-        }
+        return await action();
+    } catch (error) {
+        reportError(error);
     } finally {
-        croppingProgress = false;
+        operation = null;
+        refreshControls();
     }
+}
+
+function setSelectionMode(enabled) {
+    isSelectionModeActive = enabled;
+    buttons.toggleModeBtn.innerText = enabled ? 'Selection Mode: ON' : 'Selection Mode: OFF';
+    buttons.toggleModeBtn.classList.toggle('active', enabled);
+    buttons.toggleModeBtn.setAttribute('aria-pressed', String(enabled));
+    refreshControls();
+}
+
+function resetEditor() {
+    ++pageRevision;
+    activeImage = null;
+    isPageLoading = false;
+    if (cropperReady) imageDisplayer.contentWindow.clearImage();
+    imageDisplayer.removeAttribute('style');
+    setSelectionMode(false);
+}
+
+async function uploadFile() {
+    const file = document.getElementById('fileInput').files[0];
+    if (!file) return;
+    return runOperation('upload', async () => {
+        const formData = new FormData();
+        formData.append('file', file);
+        const result = await uploadFileApi(formData);
+        if (!Array.isArray(result.images) || result.images.some((name) => typeof name !== 'string')) {
+            throw new Error('The server did not return a page list.');
+        }
+        resetEditor();
+        renderPageThumbnails(selector, result.images, displayImage);
+    });
+}
+
+async function cropImage() {
+    if (operation || isPageLoading || !cropperReady || !activeImage || !isSelectionModeActive) return;
+    const selection = imageDisplayer.contentWindow.captureSelection();
+    if (!selection) {
+        alert('Select a nonempty region entirely inside the page first.');
+        return;
+    }
+    const { imageDir } = getActiveImagePath(imageDisplayer);
+    if (!imageDir) return;
+    const baseUrl = imageDir.split('?')[0];
+    const payload = buildCropPayload(selection, imageDir);
+    return runOperation('crop', async () => {
+        const result = await cropImageApi(payload);
+        if (result.status !== 'success') throw new Error(result.message || 'Image processing failed.');
+        const freshUrl = `${baseUrl}?t=${Date.now()}`;
+        // Exact paths avoid matching page_10 when editing page_1.
+        const tab = Array.from(selector.children)
+            .find((item) => item.dataset.src.split('?')[0] === baseUrl);
+        if (tab) {
+            tab.dataset.src = freshUrl;
+            const thumbnail = tab.querySelector('img');
+            if (thumbnail) thumbnail.src = freshUrl;
+        }
+        activeImage = await imageDisplayer.contentWindow.loadImage(freshUrl);
+        if (activeImage) {
+            updateIframeDimensions(imageDisplayer, activeImage);
+            imageDisplayer.contentWindow.fitImage();
+        }
+    });
 }
 
 async function deleteFiles() {
-    if (isDeleting) {
-        console.log("Files are already deleting!");
-        return;
-    }
-
-    try {
-        isDeleting = true;
+    return runOperation('clear', async () => {
         const result = await deleteFilesApi();
-        document.getElementById('selector').innerHTML = "";
+        selector.innerHTML = '';
+        resetEditor();
         return result;
-    } catch (error) {
-        console.error('Failed to delete files:', error);
-    } finally {
-        isDeleting = false;
-    }
+    });
 }
 
 async function compilePdf() {
-    if (isCompiling) {
-        console.log("A PDF is already being compiled!");
-        return;
-    }
-
-    try {
-        isCompiling = true;
+    return runOperation('compile', async () => {
         const result = await compilePdfApi();
         console.log(`PDF compiled successfully: ${result.size} bytes, type ${result.type}`);
         return result;
+    });
+}
+
+async function displayImage(event) {
+    if (operation) return;
+    if (!cropperReady) {
+        alert('The page editor is still loading. Please try again shortly.');
+        return;
+    }
+    const revision = ++pageRevision;
+    const src = event.currentTarget.dataset.src;
+    activeImage = null;
+    isPageLoading = true;
+    setSelectionMode(false);
+    try {
+        const original = await imageDisplayer.contentWindow.loadImage(src);
+        if (revision !== pageRevision || !original) return;
+        activeImage = original;
+        updateIframeDimensions(imageDisplayer, original);
+        imageDisplayer.contentWindow.fitImage();
     } catch (error) {
-        console.error('Failed to compile PDF:', error);
+        if (revision === pageRevision) {
+            resetEditor();
+            reportError(error);
+        }
     } finally {
-        isCompiling = false;
+        if (revision === pageRevision) {
+            isPageLoading = false;
+            refreshControls();
+        }
     }
 }
 
-function displayImage(event) {
-    const iframeDocument = imageDisplayer.contentDocument;
-    const imageElement = iframeDocument.querySelector('cropper-image');
-    const src = event.currentTarget.dataset.src;
-
-    console.log(src);
-
-    if (!imageElement) return console.error('cropper-image not found in iframe yet');
-
-    const img = new Image();
-    img.onload = () => {
-        relativeRatio = updateIframeDimensions(imageDisplayer, img, src);
-    };
-
-    const baseUrl = src.split('?')[0];
-    const freshUrl = `${baseUrl}?t=${Date.now()}`
-
-    img.src = freshUrl;
-    imageElement.setAttribute('src', freshUrl);
-}
-
 function toggleSelectionMode() {
-    isSelectionModeActive = !isSelectionModeActive;
-    const toggleBtn = document.getElementById('toggleModeBtn');
-
-    toggleBtn.innerText = isSelectionModeActive ? "Selection Mode: ON" : "Selection Mode: OFF";
-    toggleBtn.classList.toggle('active', isSelectionModeActive);
-    iframeWindow.toggleEnable();
+    if (operation || isPageLoading || !cropperReady || !activeImage) return;
+    setSelectionMode(!isSelectionModeActive);
 }
+
+async function initializeCropper() {
+    try {
+        const ready = imageDisplayer.contentWindow.cropperReady;
+        if (!ready) return; // The iframe is still on its initial about:blank document.
+        await ready;
+        cropperReady = true;
+        resetEditor();
+    } catch (error) {
+        cropperReady = false;
+        refreshControls();
+        reportError(new Error('The page editor could not load. Check your connection and reload the page.'));
+    }
+}
+
+imageDisplayer.addEventListener('load', initializeCropper);
+initializeCropper();
+refreshControls();
+
+new ResizeObserver(() => {
+    if (activeImage && !isPageLoading && !operation) {
+        updateIframeDimensions(imageDisplayer, activeImage);
+        imageDisplayer.contentWindow.fitImage();
+    }
+}).observe(imageDisplayer.parentElement);

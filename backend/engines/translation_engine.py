@@ -1,12 +1,28 @@
-from google import genai
-from google.genai import types
 import os
-from dotenv import load_dotenv
-load_dotenv()
+from pathlib import Path
 
-GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 
-client = genai.Client(api_key=GEMINI_API_KEY)
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_client = None
+
+
+def _get_client():
+    global _client
+    if _client is None:
+        from dotenv import load_dotenv
+        # Existing environment wins; project-root settings precede the older location.
+        load_dotenv(PROJECT_ROOT / ".env", override=False)
+        load_dotenv(PROJECT_ROOT / "backend" / ".env", override=False)
+        api_key = os.getenv("GEMINI_API_KEY", "").strip()
+        if not api_key:
+            raise RuntimeError("GEMINI_API_KEY is missing. Configure it in the project .env file.")
+        try:
+            from google import genai
+            _client = genai.Client(api_key=api_key)
+        except Exception as error:
+            raise RuntimeError("The translation client could not be initialized.") from error
+    return _client
+
 
 SYSTEM_INSTRUCTION = (
     "You are an expert technical translator specializing in garment manufacturing, apparel production, and supply chain operations. "
@@ -31,13 +47,13 @@ SYSTEM_INSTRUCTION = (
 
 
 async def translate_text(text: str) -> str:
-
     if not text or not text.strip():
-        return "No text to translate."
-
+        raise ValueError("There is no text to translate.")
+    client = _get_client()
     try:
+        from google.genai import types
         response = await client.aio.models.generate_content(
-            model='gemini-3.1-flash-lite',
+            model=os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite").strip() or "gemini-3.1-flash-lite",
             contents=text,
             config=types.GenerateContentConfig(
                 system_instruction=SYSTEM_INSTRUCTION,
@@ -45,10 +61,9 @@ async def translate_text(text: str) -> str:
                 thinking_config=types.ThinkingConfig(thinking_level="low"),
             ),
         )
-
-        return response.text.strip()
-    
-    except Exception as e:
-
-        print(f"❌ Translation Error: {e}")
-        return f"[Translation Error: Unable to translate text right now]"
+        translated = response.text
+        if not isinstance(translated, str) or not translated.strip():
+            raise RuntimeError("Translation returned no text.")
+        return translated.strip()
+    except Exception as error:
+        raise RuntimeError("Translation failed. Please retry; the image has not been changed.") from error
